@@ -21,6 +21,30 @@ LEVEL_COLUMNS = [
 ]
 ROW_NUMBER_COLUMN = "Nr"
 INVALID_FILENAME_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1F]')
+LEVEL_SUBLABELS = {
+    "Level_1": "Unterwerksbezeichnung",
+    "Level_2": "Anlagenklasse",
+    "Level_3": "Disziplin",
+    "Level_4": "Dokumentenart",
+    "Level_5": "Dokumentnummer",
+    "Level_6": "Freitext",
+    "Level_7": "Revision",
+    "Level_8": "Projektnummer",
+}
+
+
+def _build_table_columns() -> dict[str, dict[str, object]]:
+    columns: dict[str, dict[str, object]] = {
+        ROW_NUMBER_COLUMN: {"index": 0, "title": "Nr\nZeile", "width": "70px"}
+    }
+    for idx, column in enumerate(LEVEL_COLUMNS, start=1):
+        sublabel = LEVEL_SUBLABELS.get(column, "")
+        title = f"{column}\n{sublabel}" if sublabel else column
+        columns[column] = {"index": idx, "title": title}
+    return columns
+
+
+TABLE_COLUMNS = _build_table_columns()
 
 selected_folder = ""
 selected_files: list[str] = []
@@ -238,6 +262,12 @@ html, body, #root {
 .footer-btn {
   min-width: 170px;
 }
+
+.nc-table thead .MuiTableSortLabel-root {
+  white-space: pre-line;
+  line-height: 1.15;
+  align-items: flex-start;
+}
 """
 
 
@@ -248,6 +278,8 @@ with Page() as page:
         with part(class_name="table-wrap"):
             table(
                 data="{nc_rows}",
+                columns=TABLE_COLUMNS,
+                class_name="nc-table",
                 editable=True,
                 editable__Nr=False,
                 on_add=False,
