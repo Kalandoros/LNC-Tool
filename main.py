@@ -454,7 +454,7 @@ html, body, #root {
   align-items: flex-start;
 }
 
-.css-is1b5t .MuiInput-root .MuiInput-input {
+.nc-table td .MuiInput-root .MuiInput-input {
   width: 80px !important;
 }
 """
