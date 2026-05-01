@@ -6,7 +6,7 @@ import uuid
 
 import pandas as pd
 from taipy.gui import Gui, notify
-from taipy.gui.builder import Page, button, html, part, table, text
+from taipy.gui.builder import Page, button, html, input, part, selector, table, text
 
 
 LEVEL_COLUMNS = [
@@ -19,6 +19,14 @@ LEVEL_COLUMNS = [
     "Level_7",
     "Level_8",
 ]
+TABLE_DROPDOWN_COLUMNS = ["Level_1", "Level_2", "Level_3", "Level_4", "Level_5"]
+TABLE_COLUMN_WIDTHS = {
+    "Level_1": "220px",
+    "Level_2": "190px",
+    "Level_3": "190px",
+    "Level_4": "220px",
+    "Level_5": "210px",
+}
 ROW_NUMBER_COLUMN = "Nr"
 INVALID_FILENAME_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1F]')
 LEVEL_SUBLABELS = {
@@ -41,15 +49,92 @@ def _build_table_columns() -> dict[str, dict[str, object]]:
         sublabel = LEVEL_SUBLABELS.get(column, "")
         title = f"{column}\n{sublabel}" if sublabel else column
         columns[column] = {"index": idx, "title": title}
+        width = TABLE_COLUMN_WIDTHS.get(column)
+        if width:
+            columns[column]["width"] = width
     return columns
 
 
 TABLE_COLUMNS = _build_table_columns()
 
+
+def _load_csv_with_fallback(csv_path: Path) -> pd.DataFrame:
+    for encoding in ("utf-8-sig", "cp1252", "latin-1"):
+        try:
+            return pd.read_csv(
+                csv_path,
+                sep=";",
+                dtype=str,
+                keep_default_na=False,
+                encoding=encoding,
+            )
+        except UnicodeDecodeError:
+            continue
+    return pd.read_csv(csv_path, sep=";", dtype=str, keep_default_na=False, encoding="latin-1")
+
+
+def _unique_non_empty(values: pd.Series) -> list[str]:
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for raw in values:
+        value = str(raw).strip()
+        if not value or value in seen:
+            continue
+        seen.add(value)
+        ordered.append(value)
+    return ordered
+
+
+def _load_level_lovs() -> dict[str, list[str]]:
+    csv_path = Path(__file__).parent / "src" / "data" / "nc_eng_unterwerke.csv"
+    if not csv_path.exists():
+        return {column: [] for column in TABLE_DROPDOWN_COLUMNS}
+
+    try:
+        csv_df = _load_csv_with_fallback(csv_path)
+    except Exception:
+        return {column: [] for column in TABLE_DROPDOWN_COLUMNS}
+
+    column_index_map = {
+        "Level_1": 0,  # Unterwerksbezeichnung
+        "Level_2": 1,  # Anlagenklasse
+        "Level_3": 2,  # Disziplin
+        "Level_4": 4,  # Dokumentart
+        "Level_5": 6,  # Dokumentnummer
+    }
+
+    lovs: dict[str, list[str]] = {}
+    for level_column, csv_col_idx in column_index_map.items():
+        if csv_col_idx >= len(csv_df.columns):
+            lovs[level_column] = []
+            continue
+        lovs[level_column] = _unique_non_empty(csv_df.iloc[:, csv_col_idx])
+    return lovs
+
+
+LEVEL_LOVS = _load_level_lovs()
+
 selected_folder = ""
 selected_files: list[str] = []
 status_text = "Bitte zuerst einen Ordner auswaehlen."
+selection_text = "Ausgewaehlte Zeilen: keine (Bulk wirkt auf alle Zeilen)."
 nc_rows = pd.DataFrame(columns=[ROW_NUMBER_COLUMN, *LEVEL_COLUMNS])
+selected_table_rows: list[int] = []
+
+level_1_lov = LEVEL_LOVS.get("Level_1", [])
+level_2_lov = LEVEL_LOVS.get("Level_2", [])
+level_3_lov = LEVEL_LOVS.get("Level_3", [])
+level_4_lov = LEVEL_LOVS.get("Level_4", [])
+level_5_lov = LEVEL_LOVS.get("Level_5", [])
+
+bulk_level_1 = ""
+bulk_level_2 = ""
+bulk_level_3 = ""
+bulk_level_4 = ""
+bulk_level_5 = ""
+bulk_level_6 = ""
+bulk_level_7 = ""
+bulk_level_8 = ""
 
 
 def _empty_rows(row_count: int) -> pd.DataFrame:
@@ -59,6 +144,14 @@ def _empty_rows(row_count: int) -> pd.DataFrame:
     )
     rows.insert(0, ROW_NUMBER_COLUMN, list(range(1, row_count + 1)))
     return rows
+
+
+def _update_selection_text(state) -> None:
+    selected_count = len(state.selected_table_rows or [])
+    if selected_count:
+        state.selection_text = f"Ausgewaehlte Zeilen: {selected_count} Zeile(n)."
+    else:
+        state.selection_text = "Ausgewaehlte Zeilen: keine (Bulk wirkt auf alle Zeilen)."
 
 
 def _choose_folder() -> str:
@@ -120,6 +213,8 @@ def on_select_folder(state, _id=None, _payload=None) -> None:
     state.selected_folder = folder
     state.selected_files = files
     state.nc_rows = _empty_rows(len(files))
+    state.selected_table_rows = []
+    _update_selection_text(state)
     state.status_text = f"Ordner: {folder} | Dateien: {len(files)}"
 
     if files:
@@ -220,6 +315,73 @@ def on_nc_uebernehmen(state, _id=None, _payload=None) -> None:
     notify(state, "success", f"{len(rename_ops)} Dateien umbenannt.")
 
 
+def on_table_action(state, _var_name, payload) -> None:
+    row_index = payload.get("index")
+    if row_index is None:
+        return
+
+    try:
+        index = int(row_index)
+    except (TypeError, ValueError):
+        return
+
+    selected = list(state.selected_table_rows or [])
+    if index in selected:
+        selected.remove(index)
+    else:
+        selected.append(index)
+    selected.sort()
+    state.selected_table_rows = selected
+    _update_selection_text(state)
+
+
+def on_clear_selection(state, _id=None, _payload=None) -> None:
+    state.selected_table_rows = []
+    _update_selection_text(state)
+
+
+def _apply_single_bulk_change(state, var_name: str, value: object) -> None:
+    if state.nc_rows.empty:
+        return
+
+    prefix = "bulk_level_"
+    if not isinstance(var_name, str) or not var_name.startswith(prefix):
+        return
+
+    level_suffix = var_name[len(prefix) :]
+    if not level_suffix.isdigit():
+        return
+
+    level_index = int(level_suffix)
+    if level_index < 1 or level_index > len(LEVEL_COLUMNS):
+        return
+    if level_index == 7:  # Level_7 bulk is intentionally disabled
+        return
+
+    new_value = str(value).strip() if value is not None else ""
+    if not new_value:
+        return
+
+    target_column = LEVEL_COLUMNS[level_index - 1]
+    updated_rows = state.nc_rows.copy()
+    selected = sorted(
+        {
+            int(idx)
+            for idx in (state.selected_table_rows or [])
+            if str(idx).strip().isdigit() and 0 <= int(idx) < len(updated_rows)
+        }
+    )
+    target_indices = selected if selected else list(range(len(updated_rows)))
+
+    for row_idx in target_indices:
+        updated_rows.at[row_idx, target_column] = new_value
+
+    state.nc_rows = updated_rows
+
+def on_bulk_field_change(state, var_name, value) -> None:
+    _apply_single_bulk_change(state, var_name, value)
+
+
 CSS = """
 html, body, #root {
   height: 100%;
@@ -236,8 +398,31 @@ html, body, #root {
   margin-bottom: 10px;
 }
 
+.bulk-panel {
+  border: 1px solid #d8d8d8;
+  border-radius: 6px;
+  padding: 10px;
+  margin-bottom: 10px;
+  background: #fafafa;
+  overflow-x: auto;
+}
+
+.bulk-grid {
+  display: grid;
+  grid-template-columns: repeat(8, minmax(120px, 1fr));
+  min-width: 1020px;
+  gap: 8px 10px;
+  align-items: end;
+}
+
+.bulk-item-label {
+  display: block;
+  font-size: 12px;
+  margin-bottom: 4px;
+}
+
 .table-wrap {
-  height: calc(100vh - 150px);
+  height: calc(100vh - 260px);
   overflow: auto;
   border: 1px solid #d8d8d8;
   border-radius: 6px;
@@ -268,6 +453,10 @@ html, body, #root {
   line-height: 1.15;
   align-items: flex-start;
 }
+
+.css-is1b5t .MuiInput-root .MuiInput-input {
+  width: 80px !important;
+}
 """
 
 
@@ -275,6 +464,63 @@ with Page() as page:
     html("style", CSS)
     with part(class_name="app-shell"):
         text("{status_text}", class_name="status-line")
+        with part(class_name="bulk-panel"):
+            with part(class_name="bulk-grid"):
+                with part():
+                    text("Level_1", class_name="bulk-item-label")
+                    selector(
+                        value="{bulk_level_1}",
+                        lov="{level_1_lov}",
+                        dropdown=True,
+                        width="100%",
+                        on_change=on_bulk_field_change,
+                    )
+                with part():
+                    text("Level_2", class_name="bulk-item-label")
+                    selector(
+                        value="{bulk_level_2}",
+                        lov="{level_2_lov}",
+                        dropdown=True,
+                        width="100%",
+                        on_change=on_bulk_field_change,
+                    )
+                with part():
+                    text("Level_3", class_name="bulk-item-label")
+                    selector(
+                        value="{bulk_level_3}",
+                        lov="{level_3_lov}",
+                        dropdown=True,
+                        width="100%",
+                        on_change=on_bulk_field_change,
+                    )
+                with part():
+                    text("Level_4", class_name="bulk-item-label")
+                    selector(
+                        value="{bulk_level_4}",
+                        lov="{level_4_lov}",
+                        dropdown=True,
+                        width="100%",
+                        on_change=on_bulk_field_change,
+                    )
+                with part():
+                    text("Level_5", class_name="bulk-item-label")
+                    selector(
+                        value="{bulk_level_5}",
+                        lov="{level_5_lov}",
+                        dropdown=True,
+                        width="100%",
+                        on_change=on_bulk_field_change,
+                    )
+                with part():
+                    text("Level_6", class_name="bulk-item-label")
+                    input(value="{bulk_level_6}", width="100%", on_change=on_bulk_field_change)
+                with part():
+                    text("Level_7", class_name="bulk-item-label")
+                    input(value="{bulk_level_7}", width="100%", active=False)
+                with part():
+                    text("Level_8", class_name="bulk-item-label")
+                    input(value="{bulk_level_8}", width="100%", on_change=on_bulk_field_change)
+        text("{selection_text}", class_name="status-line")
         with part(class_name="table-wrap"):
             table(
                 data="{nc_rows}",
@@ -282,6 +528,13 @@ with Page() as page:
                 class_name="nc-table",
                 editable=True,
                 editable__Nr=False,
+                lov__Level_1="{level_1_lov}",
+                lov__Level_2="{level_2_lov}",
+                lov__Level_3="{level_3_lov}",
+                lov__Level_4="{level_4_lov}",
+                lov__Level_5="{level_5_lov}",
+                selected="{selected_table_rows}",
+                on_action=on_table_action,
                 on_add=False,
                 on_delete=False,
                 rebuild=True,
@@ -292,6 +545,7 @@ with Page() as page:
         with part(class_name="footer-fixed"):
             button("Ordner auswaehlen", on_action=on_select_folder, class_name="footer-btn")
             button("NC-Vorschlag", on_action=on_nc_vorschlag, class_name="footer-btn")
+            button("Auswahl zuruecksetzen", on_action=on_clear_selection, class_name="footer-btn")
             button("NC-Uebernehmen", on_action=on_nc_uebernehmen, class_name="footer-btn")
 
 
