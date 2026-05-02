@@ -20,14 +20,18 @@ LEVEL_COLUMNS = [
     "Level_8",
 ]
 TABLE_DROPDOWN_COLUMNS = ["Level_1", "Level_2", "Level_3", "Level_4", "Level_5"]
-TABLE_COLUMN_WIDTHS = {
-    "Level_1": "220px",
-    "Level_2": "190px",
-    "Level_3": "190px",
-    "Level_4": "220px",
-    "Level_5": "210px",
-}
 ROW_NUMBER_COLUMN = "Nr"
+ROW_NUMBER_WIDTH_PX = 40
+LEVEL_COLUMN_WIDTHS_PX = {
+    "Level_1": 220,
+    "Level_2": 190,
+    "Level_3": 190,
+    "Level_4": 220,
+    "Level_5": 210,
+    "Level_6": 180,
+    "Level_7": 130,
+    "Level_8": 180,
+}
 INVALID_FILENAME_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1F]')
 LEVEL_SUBLABELS = {
     "Level_1": "Unterwerksbezeichnung",
@@ -43,13 +47,14 @@ LEVEL_SUBLABELS = {
 
 def _build_table_columns() -> dict[str, dict[str, object]]:
     columns: dict[str, dict[str, object]] = {
-        ROW_NUMBER_COLUMN: {"index": 0, "title": "Nr\nZeile", "width": "70px"}
+        ROW_NUMBER_COLUMN: {"index": 0, "title": "Nr\nZeile", "width": f"{ROW_NUMBER_WIDTH_PX}px"}
     }
     for idx, column in enumerate(LEVEL_COLUMNS, start=1):
         sublabel = LEVEL_SUBLABELS.get(column, "")
         title = f"{column}\n{sublabel}" if sublabel else column
         columns[column] = {"index": idx, "title": title}
-        width = TABLE_COLUMN_WIDTHS.get(column)
+        width_px = LEVEL_COLUMN_WIDTHS_PX.get(column)
+        width = f"{width_px}px" if width_px is not None else None
         if width:
             columns[column]["width"] = width
     return columns
@@ -120,6 +125,8 @@ status_text = "Bitte zuerst einen Ordner auswaehlen."
 selection_text = "Ausgewaehlte Zeilen: keine (Bulk wirkt auf alle Zeilen)."
 nc_rows = pd.DataFrame(columns=[ROW_NUMBER_COLUMN, *LEVEL_COLUMNS])
 selected_table_rows: list[int] = []
+range_start = ""
+range_end = ""
 
 level_1_lov = LEVEL_LOVS.get("Level_1", [])
 level_2_lov = LEVEL_LOVS.get("Level_2", [])
@@ -214,19 +221,21 @@ def on_select_folder(state, _id=None, _payload=None) -> None:
     state.selected_files = files
     state.nc_rows = _empty_rows(len(files))
     state.selected_table_rows = []
+    state.range_start = ""
+    state.range_end = ""
     _update_selection_text(state)
     state.status_text = f"Ordner: {folder} | Dateien: {len(files)}"
 
     if files:
-        notify(state, "success", f"{len(files)} Dateien geladen.")
+        _apply_nc_vorschlag_to_rows(state)
+        notify(state, "success", f"{len(files)} Dateien geladen. NC-Vorschlag automatisch angewendet.")
     else:
         notify(state, "warning", "Der gewaehlte Ordner enthaelt keine Dateien.")
 
 
-def on_nc_vorschlag(state, _id=None, _payload=None) -> None:
+def _apply_nc_vorschlag_to_rows(state) -> bool:
     if state.nc_rows.empty:
-        notify(state, "warning", "Keine Dateien geladen.")
-        return
+        return False
 
     suggested = state.nc_rows.copy()
     for row_index, file_path in enumerate(state.selected_files):
@@ -236,6 +245,13 @@ def on_nc_vorschlag(state, _id=None, _payload=None) -> None:
             suggested.at[row_index, "Level_7"] = "0"
 
     state.nc_rows = suggested
+    return True
+
+
+def on_nc_vorschlag(state, _id=None, _payload=None) -> None:
+    if not _apply_nc_vorschlag_to_rows(state):
+        notify(state, "warning", "Keine Dateien geladen.")
+        return
     notify(state, "success", "NC-Vorschlag erzeugt.")
 
 
@@ -330,14 +346,64 @@ def on_table_action(state, _var_name, payload) -> None:
         selected.remove(index)
     else:
         selected.append(index)
+
     selected.sort()
     state.selected_table_rows = selected
+    clicked_row_number = str(index + 1)
+    state.range_start = clicked_row_number
+    state.range_end = clicked_row_number
     _update_selection_text(state)
 
 
 def on_clear_selection(state, _id=None, _payload=None) -> None:
     state.selected_table_rows = []
+    state.range_start = ""
+    state.range_end = ""
     _update_selection_text(state)
+
+
+def _parse_row_number(value: object) -> int | None:
+    text_value = str(value).strip() if value is not None else ""
+    if not text_value or not text_value.isdigit():
+        return None
+    parsed = int(text_value)
+    if parsed < 1:
+        return None
+    return parsed
+
+
+def _apply_range_selection(state) -> None:
+    start_nr = _parse_row_number(state.range_start)
+    end_nr = _parse_row_number(state.range_end)
+    if start_nr is None and end_nr is None:
+        return
+    if start_nr is None:
+        start_nr = end_nr
+    if end_nr is None:
+        end_nr = start_nr
+    if start_nr is None or end_nr is None:
+        return
+
+    min_nr, max_nr = sorted((start_nr, end_nr))
+    max_allowed = len(state.nc_rows)
+    if max_allowed <= 0:
+        return
+    if min_nr > max_allowed or max_nr > max_allowed:
+        return
+
+    start_idx = min_nr - 1
+    end_idx = max_nr - 1
+    state.selected_table_rows = list(range(start_idx, end_idx + 1))
+    state.range_start = str(min_nr)
+    state.range_end = str(max_nr)
+    _update_selection_text(state)
+
+
+def on_range_input_change(state, var_name, value) -> None:
+    _ = value
+    if var_name not in ("range_start", "range_end"):
+        return
+    _apply_range_selection(state)
 
 
 def _apply_single_bulk_change(state, var_name: str, value: object) -> None:
@@ -398,10 +464,26 @@ html, body, #root {
   margin-bottom: 10px;
 }
 
+.selection-tools {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 10px;
+}
+
+.selection-tools-label,
+.selection-tools-sep {
+  white-space: nowrap;
+}
+
+.selection-clear-btn {
+  min-width: 150px;
+}
+
 .bulk-panel {
   border: 1px solid #d8d8d8;
   border-radius: 6px;
-  padding: 10px;
+  padding: 10px 0;
   margin-bottom: 10px;
   background: #fafafa;
   overflow-x: auto;
@@ -409,10 +491,22 @@ html, body, #root {
 
 .bulk-grid {
   display: grid;
-  grid-template-columns: repeat(8, minmax(120px, 1fr));
-  min-width: 1020px;
-  gap: 8px 10px;
+  grid-template-columns: 220px 190px 190px 220px 210px 180px 130px 180px;
+  min-width: 1600px;
+  row-gap: 8px;
+  column-gap: 0;
+  padding-left: 80px;
+  box-sizing: border-box;
   align-items: end;
+}
+
+.bulk-col {
+  padding-right: 10px;
+  box-sizing: border-box;
+}
+
+.bulk-col-last {
+  padding-right: 0;
 }
 
 .bulk-item-label {
@@ -457,6 +551,18 @@ html, body, #root {
 .nc-table td .MuiInput-root .MuiInput-input {
   width: 80px !important;
 }
+
+.nc-table .MuiTableBody-root .MuiTableRow-root.Mui-selected .MuiTableCell-root {
+  background-color: rgba(25, 118, 210, 0.32) !important;
+}
+
+.nc-table .MuiTableBody-root .MuiTableRow-root.Mui-selected:hover .MuiTableCell-root {
+  background-color: rgba(25, 118, 210, 0.4) !important;
+}
+
+.nc-table .MuiTableBody-root .MuiTableRow-root.Mui-selected .MuiTableCell-root:first-child {
+  box-shadow: inset 3px 0 0 #1976d2;
+}
 """
 
 
@@ -466,7 +572,7 @@ with Page() as page:
         text("{status_text}", class_name="status-line")
         with part(class_name="bulk-panel"):
             with part(class_name="bulk-grid"):
-                with part():
+                with part(class_name="bulk-col"):
                     text("Level_1", class_name="bulk-item-label")
                     selector(
                         value="{bulk_level_1}",
@@ -475,7 +581,7 @@ with Page() as page:
                         width="100%",
                         on_change=on_bulk_field_change,
                     )
-                with part():
+                with part(class_name="bulk-col"):
                     text("Level_2", class_name="bulk-item-label")
                     selector(
                         value="{bulk_level_2}",
@@ -484,7 +590,7 @@ with Page() as page:
                         width="100%",
                         on_change=on_bulk_field_change,
                     )
-                with part():
+                with part(class_name="bulk-col"):
                     text("Level_3", class_name="bulk-item-label")
                     selector(
                         value="{bulk_level_3}",
@@ -493,7 +599,7 @@ with Page() as page:
                         width="100%",
                         on_change=on_bulk_field_change,
                     )
-                with part():
+                with part(class_name="bulk-col"):
                     text("Level_4", class_name="bulk-item-label")
                     selector(
                         value="{bulk_level_4}",
@@ -502,7 +608,7 @@ with Page() as page:
                         width="100%",
                         on_change=on_bulk_field_change,
                     )
-                with part():
+                with part(class_name="bulk-col"):
                     text("Level_5", class_name="bulk-item-label")
                     selector(
                         value="{bulk_level_5}",
@@ -511,16 +617,22 @@ with Page() as page:
                         width="100%",
                         on_change=on_bulk_field_change,
                     )
-                with part():
+                with part(class_name="bulk-col"):
                     text("Level_6", class_name="bulk-item-label")
                     input(value="{bulk_level_6}", width="100%", on_change=on_bulk_field_change)
-                with part():
+                with part(class_name="bulk-col"):
                     text("Level_7", class_name="bulk-item-label")
                     input(value="{bulk_level_7}", width="100%", active=False)
-                with part():
+                with part(class_name="bulk-col bulk-col-last"):
                     text("Level_8", class_name="bulk-item-label")
                     input(value="{bulk_level_8}", width="100%", on_change=on_bulk_field_change)
         text("{selection_text}", class_name="status-line")
+        with part(class_name="selection-tools"):
+            text("Zeile(n)-Nr.:", class_name="selection-tools-label")
+            input(value="{range_start}", width="80px", on_change=on_range_input_change)
+            text("-", class_name="selection-tools-sep")
+            input(value="{range_end}", width="80px", on_change=on_range_input_change)
+            button("Auswahl zuruecksetzen", on_action=on_clear_selection, class_name="selection-clear-btn")
         with part(class_name="table-wrap"):
             table(
                 data="{nc_rows}",
@@ -545,7 +657,6 @@ with Page() as page:
         with part(class_name="footer-fixed"):
             button("Ordner auswaehlen", on_action=on_select_folder, class_name="footer-btn")
             button("NC-Vorschlag", on_action=on_nc_vorschlag, class_name="footer-btn")
-            button("Auswahl zuruecksetzen", on_action=on_clear_selection, class_name="footer-btn")
             button("NC-Uebernehmen", on_action=on_nc_uebernehmen, class_name="footer-btn")
 
 
@@ -560,4 +671,9 @@ def _find_free_port(start: int = 5000, end: int = 5100) -> int:
 if __name__ == "__main__":
     port = _find_free_port()
     print(f"LNC Tool startet auf http://127.0.0.1:{port}")
-    Gui(page=page).run(title="LNC Tool", use_reloader=False, dark_mode=False, port=port)
+    Gui(page=page).run(
+        title="LNC Tool",
+        use_reloader=False,
+        dark_mode=False,
+        port=port,
+    )
